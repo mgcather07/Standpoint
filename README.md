@@ -58,3 +58,4 @@ node scripts/make-icons.mjs && node scripts/make-og.mjs   # regenerate the logo,
 - [docs/DATA_INVENTORY.md](docs/DATA_INVENTORY.md): which layers were actually obtained, and the known gaps
 - [docs/ACCOUNTS.md](docs/ACCOUNTS.md): sign-in, data model, security rules, clubs and invitations, offline sync
 - [docs/MODEL.md](docs/MODEL.md): scoring model, gates, confidence and limits
+- [docs/STATE_ROLLOUT.md](docs/STATE_ROLLOUT.md): work queue for adding public land beyond Alabama, one state at a time
