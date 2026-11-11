@@ -10,7 +10,7 @@ import type { JournalEntry } from '../lib/models';
 import type { HuntRecommendation } from '../engine/types';
 import { fmtDate } from '../engine/time';
 import { BottomSheet, ModalSheet, type Snap } from '../ui/Sheet';
-import { Avatar, Button } from '../ui/kit';
+import { Avatar, Button, Notice } from '../ui/kit';
 import { useToast } from '../ui/toast';
 import { BookOpen, Calendar, ChevronDown, Lock, MapIcon, TreePine, User, LogIn } from '../ui/icons';
 import { ExploreBody, ExploreHeader, ExploreMini } from '../features/explore/ExplorePanel';
@@ -24,6 +24,10 @@ import { Welcome } from '../features/you/Welcome';
 import { LogoMark } from '../ui/Logo';
 import { useClubs } from '../lib/club-data';
 import { useLocal } from '../lib/local';
+import { useStateDirectory } from '../features/directory/useStateDirectory';
+import { DirectoryBody, DirectoryHeader, DirectoryMini } from '../features/directory/DirectoryPanel';
+import { areaBounds, type DirectoryArea } from '../states/directory';
+import { stateBounds, type StateId } from '../states/registry';
 
 type Modal = null | 'workspace' | 'account' | 'filters' | 'layers' | 'compass';
 const NAV: Array<{ tab: Tab; label: string; icon: typeof MapIcon }> = [{ tab: 'explore', label: 'Explore', icon: MapIcon }, { tab: 'outlook', label: '7-Day', icon: Calendar }, { tab: 'journal', label: 'Journal', icon: BookOpen }, { tab: 'you', label: 'You', icon: User }];
@@ -46,6 +50,35 @@ export function AppShell() {
   const [draft, setDraft] = useState<Partial<JournalEntry> | null>(null);
   const [welcomed, setWelcomed] = useLocal<boolean>('bh.welcomed.v1', false);
   const signedIn = account.status === 'signed-in';
+  // the chosen state: Alabama runs the full app as before; any other state shows its public land directory
+  const dir = useStateDirectory();
+  const dirLayer = useMemo(() => (dir.isDirectory ? { areas: dir.visible, selectedId: dir.selectedId } : null), [dir.isDirectory, dir.visible, dir.selectedId]);
+  const pad = () => (desktop ? 60 : 36);
+  const fitState = useCallback((id: StateId) => {
+    const s = dir.states.find((x) => x.id === id);
+    if (s) ctl.mapRef.current?.fitBounds(stateBounds(s), { padding: pad(), duration: 800 });
+  }, [dir.states, desktop]); // eslint-disable-line react-hooks/exhaustive-deps
+  const chooseState = (id: StateId) => {
+    if (id === dir.state.id) return;
+    dir.choose(id);
+    const s = dir.states.find((x) => x.id === id);
+    // back to Alabama: return to the area you were on; another state: show all of it
+    setTimeout(() => (s?.kind === 'intelligence' ? ctl.fitWorkspace(ctl.workspace) : fitState(id)), 60);
+  };
+  // tapping an area on the map opens its card and lifts the sheet so the card is visible
+  const openArea = (id: string) => { dir.setSelectedId(id); setSnap((s) => (s === 'peek' || s === 'mini' ? 'half' : s)); };
+  const showArea = (a: DirectoryArea) => { if (!desktop) setTab('explore'); setTimeout(() => ctl.mapRef.current?.fitBounds(areaBounds(a), { padding: pad(), maxZoom: 13, duration: 800 }), 60); };
+  // opening the app on a directory state: start the map on that state rather than Bankhead
+  const openedOnState = useRef(false);
+  useEffect(() => {
+    const map = ctl.mapRef.current;
+    if (openedOnState.current || !map || !dir.isDirectory) return;
+    openedOnState.current = true;
+    const go = () => map.fitBounds(stateBounds(dir.state), { padding: pad(), duration: 0 });
+    if (map.getLayer('bg')) go(); else map.once('load', go);
+  }, [ctl.mapRef.current, dir.isDirectory]); // eslint-disable-line react-hooks/exhaustive-deps
+  const pillName = dir.isDirectory ? `${dir.state.name} public land` : ctl.workspace.name;
+  const pillPrivate = !dir.isDirectory && ctl.workspace.private;
 
   // phone: the map is only visible on Explore; when it comes back, let it re-measure itself
   useEffect(() => { if (tab === 'explore' || desktop) setTimeout(() => ctl.mapRef.current?.resize(), 60); }, [tab, desktop]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -112,15 +145,16 @@ export function AppShell() {
 
   const mapNode = (
     <MapView data={ctl.data} workspaceKind={ctl.workspace.kind} dark={dark} base={ctl.base} layers={ctl.layers} marks={ctl.marks} selected={ctl.selected} windHour={ctl.windHour} userLoc={ctl.userLoc} pins={ctl.pins}
-      setups={ctl.setups} typeFilter={ctl.typeFilter} startPin={ctl.prefs.start} clubBoundary={ctl.land?.geometry ?? null} clubRoads={ctl.land ? ctl.clubRoads : null} onCandidate={ctl.onCandidate} onInspect={ctl.onInspect} mapRef={ctl.mapRef} />
+      setups={ctl.setups} typeFilter={ctl.typeFilter} startPin={ctl.prefs.start} clubBoundary={ctl.land?.geometry ?? null} clubRoads={ctl.land ? ctl.clubRoads : null} onCandidate={ctl.onCandidate} onInspect={ctl.onInspect} mapRef={ctl.mapRef}
+      directory={dirLayer} onArea={openArea} />
   );
   const chrome = (variant: 'mobile' | 'desktop') => (
-    <MapChrome variant={variant} workspace={ctl.workspace} onWorkspace={() => setModal('workspace')} user={account.user} signedIn={signedIn} onAccount={() => setModal('account')} onLayers={() => setModal('layers')} onLocate={ctl.onGps} onCompass={() => setModal('compass')} hint={ctl.pickingStart ? 'Tap the map to set your starting point' : null}
+    <MapChrome variant={variant} workspace={dir.isDirectory ? { ...ctl.workspace, name: pillName, private: false } : ctl.workspace} onWorkspace={() => setModal('workspace')} user={account.user} signedIn={signedIn} onAccount={() => setModal('account')} onLayers={() => setModal('layers')} onLocate={ctl.onGps} onCompass={() => setModal('compass')} hint={ctl.pickingStart ? 'Tap the map to set your starting point' : null}
       overlay={ctl.blood.trail && <BloodTrailBar trail={ctl.blood.trail} status={ctl.blood.status} onMarkGps={ctl.blood.markAtGps} onUndo={ctl.blood.undo} onDone={ctl.blood.hide} onShow={() => ctl.flyTo(ctl.blood.trail!.drops[ctl.blood.trail!.drops.length - 1].coord, 17)} />} />
   );
 
   const screens: Record<Exclude<Tab, 'explore'>, ReactNode> = {
-    outlook: <OutlookScreen days={ctl.outlook} compareId={ctl.selectedKey?.id ?? null} workspaceName={ctl.workspace.name} onPick={(date, r) => { ctl.setPrefs({ ...ctl.prefs, date }); ctl.openRec(r); setTab('explore'); }} />,
+    outlook: dir.isDirectory ? <DirectoryOnlyNotice name={dir.state.name} what="The 7-day outlook" onAlabama={() => chooseState('AL')} /> : <OutlookScreen days={ctl.outlook} compareId={ctl.selectedKey?.id ?? null} workspaceName={ctl.workspace.name} onPick={(date, r) => { ctl.setPrefs({ ...ctl.prefs, date }); ctl.openRec(r); setTab('explore'); }} />,
     journal: <JournalScreen entries={journal.entries} onSave={(e) => journal.save({ ...e, workspace: e.workspace ?? ctl.workspace.id })} onDelete={journal.remove} pins={ctl.pins} onDeletePin={ctl.removePin} draft={draft} onDraftUsed={() => setDraft(null)} workspaceName={wsName} sync={sync} signedIn={signedIn} onSignIn={() => setModal('account')}
       onFly={(c) => { setTab('explore'); setTimeout(() => ctl.flyTo(c, 15.5), 120); }} onFetchWeather={ctl.fetchJournalWeather} />,
     you: <YouScreen ctl={ctl} account={account} sync={sync} theme={theme} setTheme={setTheme} journal={journal.entries} canInstall={install.canInstall} onInstall={() => void install.install()} onToast={(t) => toast.show(t)} />,
@@ -128,7 +162,8 @@ export function AppShell() {
 
   const sheets = (
     <>
-      <WorkspaceSheet open={modal === 'workspace'} onClose={() => setModal(null)} workspaces={ctl.workspaces} activeId={ctl.workspace.id} onPick={ctl.switchWorkspace} account={account} landsLoading={!sync.loaded} />
+      <WorkspaceSheet open={modal === 'workspace'} onClose={() => setModal(null)} workspaces={ctl.workspaces} activeId={ctl.workspace.id} onPick={ctl.switchWorkspace} account={account} landsLoading={!sync.loaded}
+        states={dir.states} stateId={dir.state.id} onState={chooseState} />
       <AccountSheet open={modal === 'account'} onClose={() => setModal(null)} account={account} sync={sync} />
       <FilterSheet open={modal === 'filters'} onClose={() => setModal(null)} prefs={ctl.prefs} setPrefs={ctl.setPrefs} typeFilter={ctl.typeFilter} setTypeFilter={ctl.setTypeFilter} typeOptions={typeOptions} onGps={ctl.onGps} gpsStatus={ctl.gpsStatus} pickingStart={ctl.pickingStart} onPickStart={onPickStart} />
       <LayersSheet open={modal === 'layers'} onClose={() => setModal(null)} base={ctl.base} setBase={ctl.setBase} layers={ctl.layers} setLayers={ctl.setLayers} onCompass={() => setModal('compass')} onSaveOffline={() => void saveOffline()} dlProgress={ctl.dlProgress} online={ctl.online} />
@@ -153,11 +188,11 @@ export function AppShell() {
         </nav>
         <aside className="panel">
           <header className="panel-head">
-            <button type="button" className="ws-pill flat" onClick={() => setModal('workspace')}>{ctl.workspace.private ? <Lock size={16} /> : <TreePine size={16} />}<span className="ws-name">{ctl.workspace.name}</span><ChevronDown size={16} /></button>
+            <button type="button" className="ws-pill flat" onClick={() => setModal('workspace')}>{pillPrivate ? <Lock size={16} /> : <TreePine size={16} />}<span className="ws-name">{pillName}</span><ChevronDown size={16} /></button>
             <span className="t-xs muted">{fmtDate(ctl.prefs.date, { weekday: 'long', month: 'long', day: 'numeric' })}</span>
           </header>
-          {tab === 'explore' && <div className="panel-sticky"><ExploreHeader ctl={ctl} onFilters={() => setModal('filters')} /></div>}
-          <div className="panel-body scroll">{tab === 'explore' ? <ExploreBody ctl={ctl} onJournal={startJournal} onFilters={() => setModal('filters')} /> : <div className="page-inner">{screens[tab]}</div>}</div>
+          {tab === 'explore' && <div className="panel-sticky">{dir.isDirectory ? <DirectoryHeader dir={dir} /> : <ExploreHeader ctl={ctl} onFilters={() => setModal('filters')} />}</div>}
+          <div className="panel-body scroll">{tab === 'explore' ? (dir.isDirectory ? <div className="page-inner"><DirectoryBody dir={dir} onShowArea={showArea} /></div> : <ExploreBody ctl={ctl} onJournal={startJournal} onFilters={() => setModal('filters')} />) : <div className="page-inner">{screens[tab]}</div>}</div>
         </aside>
         <main className="map-wrap">{mapNode}{chrome('desktop')}</main>
         {sheets}
@@ -171,14 +206,20 @@ export function AppShell() {
       <div className="explore" hidden={tab !== 'explore'}>
         {mapNode}
         {chrome('mobile')}
-        <BottomSheet snap={snap} onSnap={setSnap} onHeight={onSheetHeight} label="Hunting areas and conditions" header={<ExploreHeader ctl={ctl} onFilters={() => setModal('filters')} />} mini={<ExploreMini ctl={ctl} />}>
-          <ExploreBody ctl={ctl} onJournal={startJournal} onFilters={() => setModal('filters')} />
-        </BottomSheet>
+        {dir.isDirectory ? (
+          <BottomSheet snap={snap} onSnap={setSnap} onHeight={onSheetHeight} label={`${dir.state.name} public land`} header={<DirectoryHeader dir={dir} />} mini={<DirectoryMini dir={dir} />}>
+            <DirectoryBody dir={dir} onShowArea={showArea} />
+          </BottomSheet>
+        ) : (
+          <BottomSheet snap={snap} onSnap={setSnap} onHeight={onSheetHeight} label="Hunting areas and conditions" header={<ExploreHeader ctl={ctl} onFilters={() => setModal('filters')} />} mini={<ExploreMini ctl={ctl} />}>
+            <ExploreBody ctl={ctl} onJournal={startJournal} onFilters={() => setModal('filters')} />
+          </BottomSheet>
+        )}
       </div>
       {tab !== 'explore' && (
         <div className="page scroll">
           <header className="page-top">
-            <button type="button" className="ws-pill flat" onClick={() => setModal('workspace')}>{ctl.workspace.private ? <Lock size={16} /> : <TreePine size={16} />}<span className="ws-name">{ctl.workspace.name}</span><ChevronDown size={16} /></button>
+            <button type="button" className="ws-pill flat" onClick={() => setModal('workspace')}>{pillPrivate ? <Lock size={16} /> : <TreePine size={16} />}<span className="ws-name">{pillName}</span><ChevronDown size={16} /></button>
             <button type="button" className="avatar-btn" onClick={() => setModal('account')} aria-label={signedIn ? 'Account' : 'Sign in'}>{signedIn ? <Avatar user={account.user} /> : <span className="signin-chip"><LogIn size={16} />Sign in</span>}</button>
           </header>
           <div className="page-inner">{screens[tab]}</div>
@@ -188,6 +229,16 @@ export function AppShell() {
         {NAV.map(({ tab: t, label, icon: Icon }) => <button key={t} type="button" className={tab === t ? 'on' : ''} aria-current={tab === t ? 'page' : undefined} onClick={() => setTab(t)}><span className="nav-ico"><Icon size={22} />{t === 'journal' && sync.pending > 0 && <i className="nav-dot" />}</span><span>{label}</span></button>)}
       </nav>
       {sheets}
+    </div>
+  );
+}
+
+/** Screens that run the Alabama engine say so plainly while another state's directory is shown. */
+function DirectoryOnlyNotice({ name, what, onAlabama }: { name: string; what: string; onAlabama: () => void }) {
+  return (
+    <div className="stack">
+      <h1>{what}</h1>
+      <Notice tone="info" title={`${what} covers Alabama areas only`} action={<Button size="sm" onClick={onAlabama}>Switch to Alabama</Button>}>You are viewing the {name} public land directory, which lists areas and agency links but does not rank hunting zones.</Notice>
     </div>
   );
 }

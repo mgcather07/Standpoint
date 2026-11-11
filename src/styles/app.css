@@ -237,3 +237,13 @@ button.tile:hover { border-color: var(--line-strong); }
 .btn.blood-btn:not(.btn-primary) { color: #b3001b; border-color: color-mix(in srgb, #b3001b 45%, var(--line-strong)); }
 :root[data-theme="dark"] .btn.blood-btn:not(.btn-primary) { color: #ff6b7d; }
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .btn.blood-btn:not(.btn-primary) { color: #ff6b7d; } }
+
+/* Public Land Directory (non-Alabama states) */
+.dir-search { position: relative; display: block; margin-top: 10px; }
+.dir-search svg { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); color: var(--text-3, var(--text-2)); pointer-events: none; }
+.dir-search .input { width: 100%; padding-left: 36px; }
+.dir-facts { display: grid; gap: 8px; margin: 0; }
+.dir-facts > div { display: grid; grid-template-columns: minmax(96px, 34%) 1fr; gap: 10px; }
+.dir-facts dt { color: var(--text-2); font-size: 13px; }
+.dir-facts dd { margin: 0; font-size: 14px; }
+.state-row { display: flex; flex-wrap: wrap; gap: 8px; }

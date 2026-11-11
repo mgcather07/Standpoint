@@ -27,14 +27,15 @@ export default defineConfig({
       workbox: {
         globPatterns: ['**/*.{js,css,html,svg,png,json,geojson,gz}'],
         // the Talladega WMAs' data packs download the first time you open that area, then stay cached for offline use
-        globIgnores: ['**/data/choccolocco/**', '**/data/hollins/**', '**/data/oakmulgee/**'],
+        // directory states (data/states/<st>.geojson) likewise download only when that state is chosen
+        globIgnores: ['**/data/choccolocco/**', '**/data/hollins/**', '**/data/oakmulgee/**', '**/data/states/**'],
         maximumFileSizeToCacheInBytes: 8 * 1024 * 1024,
         navigateFallback: '/index.html',
         // Firebase's sign-in handler must come from the network, never the app shell
         navigateFallbackDenylist: [/^\/__\//],
         runtimeCaching: [
           {
-            urlPattern: ({ url }) => /^\/data\/(choccolocco|hollins|oakmulgee)\//.test(url.pathname),
+            urlPattern: ({ url }) => /^\/data\/(choccolocco|hollins|oakmulgee|states)\//.test(url.pathname),
             handler: 'StaleWhileRevalidate',
             options: { cacheName: 'area-data', expiration: { maxEntries: 200 } },
           },

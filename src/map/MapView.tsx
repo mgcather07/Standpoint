@@ -15,6 +15,8 @@ import { pathDistance } from '../engine/roads';
 import { bloodTrails } from '../engine/blood';
 import type { WorkspaceKind } from '../lib/workspaces';
 import { LIDAR_MAX_Z, registerLidarProtocol } from './lidarTiles';
+import type { DirectoryArea } from '../states/directory';
+import { OTHER_COLOR, TYPE_COLORS } from '../states/display';
 
 // MapLibre v6 ships its worker as a separate ES module; bundle it so the static build can load it.
 maplibregl.setWorkerUrl(workerUrl);
@@ -110,6 +112,11 @@ function dropIcon(size = 40) {
   return g.getImageData(0, 0, size, size);
 }
 
+/** Public Land Directory (non-Alabama states): areas to draw and the open one. null = Alabama, nothing changes. */
+export interface DirectoryLayer { areas: DirectoryArea[]; selectedId: string | null }
+const DIR_COLOR = ['match', ['get', 'land_type_std'], ...Object.entries(TYPE_COLORS).flat(), OTHER_COLOR] as unknown as maplibregl.ExpressionSpecification;
+const DIR_LAYERS = ['dir-fill', 'dir-line', 'dir-sel', 'dir-label'];
+
 const SCORE_COLOR: maplibregl.ExpressionSpecification = ['case', ['<', ['get', 'score'], 0], '#8b948d', ['interpolate', ['linear'], ['get', 'score'], 35, '#c8493f', 55, '#e7a932', 75, '#43b26a']];
 
 interface Props {
@@ -131,16 +138,18 @@ interface Props {
   onCandidate: (id: string) => void;
   onInspect: (lngLat: [number, number]) => void;
   mapRef: React.MutableRefObject<MLMap | null>;
+  directory?: DirectoryLayer | null;
+  onArea?: (id: string) => void;
 }
 
-export function MapView({ data, workspaceKind, dark, base, layers, marks, selected, windHour, userLoc, pins, setups, typeFilter, startPin, clubBoundary, clubRoads, onCandidate, onInspect, mapRef }: Props) {
+export function MapView({ data, workspaceKind, dark, base, layers, marks, selected, windHour, userLoc, pins, setups, typeFilter, startPin, clubBoundary, clubRoads, onCandidate, onInspect, mapRef, directory = null, onArea }: Props) {
   const el = useRef<HTMLDivElement>(null);
   const ready = useRef(false);
   const regionRef = useRef<string | null>(null); // which public area the area-specific sources currently show
   const pending = useRef<Array<() => void>>([]);
   const whenReady = (fn: () => void) => (ready.current ? fn() : pending.current.push(fn));
-  const cbs = useRef({ onCandidate, onInspect });
-  cbs.current = { onCandidate, onInspect };
+  const cbs = useRef({ onCandidate, onInspect, onArea, dirActive: !!directory });
+  cbs.current = { onCandidate, onInspect, onArea, dirActive: !!directory };
   const initial = useRef({ base, dark });
   const baseRef = useRef(base);
   baseRef.current = base;
@@ -155,6 +164,12 @@ export function MapView({ data, workspaceKind, dark, base, layers, marks, select
     map.on('error', (e) => console.error('[map]', e.error?.message ?? e));
     const zoneLayers = ['cand-dot-1', 'cand-dot-2', 'cand-dot-3', 'cand-fill'];
     map.on('click', (e: MapMouseEvent) => {
+      // directory state: a tap opens the area under it; the Alabama zones and jurisdiction lookup stay out of it
+      if (cbs.current.dirActive) {
+        const hit = map.getLayer('dir-fill') ? map.queryRenderedFeatures(e.point, { layers: ['dir-fill'] })[0] : undefined;
+        if (hit) cbs.current.onArea?.(String(hit.properties.id));
+        return;
+      }
       const layers = zoneLayers.filter((l) => map.getLayer(l));
       const r = 16; // forgiving tap target for small dots
       const hits = layers.length ? map.queryRenderedFeatures([[e.point.x - r, e.point.y - r], [e.point.x + r, e.point.y + r]], { layers }) : [];
@@ -170,6 +185,8 @@ export function MapView({ data, workspaceKind, dark, base, layers, marks, select
         cbs.current.onCandidate(String(best.properties.id));
       } else cbs.current.onInspect([e.lngLat.lng, e.lngLat.lat]);
     });
+    map.on('mouseenter', 'dir-fill', () => (map.getCanvas().style.cursor = 'pointer'));
+    map.on('mouseleave', 'dir-fill', () => (map.getCanvas().style.cursor = ''));
     for (const l of zoneLayers) { map.on('mouseenter', l, () => (map.getCanvas().style.cursor = 'pointer')); map.on('mouseleave', l, () => (map.getCanvas().style.cursor = '')); }
     return () => { map.remove(); mapRef.current = null; ready.current = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -318,9 +335,10 @@ export function MapView({ data, workspaceKind, dark, base, layers, marks, select
     if (!map) return;
     const apply = () => {
       const vis = (ids: string[], on: boolean) => ids.forEach((id) => map.getLayer(id) && map.setLayoutProperty(id, 'visibility', on ? 'visible' : 'none'));
-      vis(['wma-line', 'zone-divider', 'wma-zone-line', 'wma-zone-label'], layers.boundaries && workspaceKind === 'wma');
-      vis(['nf-line', 'zoned-line', 'zoned-label'], layers.boundaries && workspaceKind === 'nf');
-      vis(['club-fill', 'club-line'], layers.boundaries && workspaceKind === 'land');
+      const al = !directory; // a directory state hides Alabama's boundaries, zones and setups
+      vis(['wma-line', 'zone-divider', 'wma-zone-line', 'wma-zone-label'], al && layers.boundaries && workspaceKind === 'wma');
+      vis(['nf-line', 'zoned-line', 'zoned-label'], al && layers.boundaries && workspaceKind === 'nf');
+      vis(['club-fill', 'club-line'], al && layers.boundaries && workspaceKind === 'land');
       vis(['nonfs'], layers.ownership);
       vis(['wilderness', 'wilderness-line'], layers.wilderness);
       vis(['fsroads'], layers.roads && workspaceKind !== 'land');
@@ -331,13 +349,14 @@ export function MapView({ data, workspaceKind, dark, base, layers, marks, select
       vis(['slope', 'slope-club'], layers.slope);
       vis(['disturbance', 'disturbance-club', 'fuel-line'], layers.disturbance);
       vis(['lidar-hs'], layers.lidar && baseRef.current !== 'lidar');
-      vis(['cand-fill', 'cand-line', 'cand-dot-1', 'cand-dot-2', 'cand-dot-3', 'cand-rank', 'setups', 'setup-label'], layers.candidates);
+      vis(['cand-fill', 'cand-line', 'cand-dot-1', 'cand-dot-2', 'cand-dot-3', 'cand-rank', 'setups', 'setup-label'], al && layers.candidates);
+      vis(['selected-fill', 'selected-casing', 'selected-line', 'cone', 'cone-line', 'route-casing', 'route'], al);
       vis(['access', 'access-label'], layers.access);
       vis(['pins'], layers.pins);
     };
     whenReady(apply);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [layers, workspaceKind, data, clubBoundary, mapRef]);
+  }, [layers, workspaceKind, data, clubBoundary, mapRef, !!directory]);
 
   // ---- the private land: boundary, roads, and its own slope / disturbance overlays ----
   useEffect(() => {
@@ -455,6 +474,30 @@ export function MapView({ data, workspaceKind, dark, base, layers, marks, select
       (map.getSource('blood') as GeoJSONSource | undefined)?.setData({ type: 'FeatureCollection', features: trails.filter((tr) => tr.drops.length > 1).map((tr) => ({ type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: tr.drops.map((d) => d.coord) } })) });
     });
   }, [userLoc, startPin, pins, mapRef]);
+
+  // ---- Public Land Directory: its own source and layers, added on first use (independent of Alabama's data) ----
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    const apply = () => {
+      if (!directory && !map.getSource('dir')) return;
+      if (!map.getSource('dir')) {
+        const before = map.getLayer('pins') ? 'pins' : undefined;
+        map.addSource('dir', { type: 'geojson', data: empty });
+        // national forests underneath, the WMAs and refuges on them on top
+        const sortKey: maplibregl.ExpressionSpecification = ['case', ['==', ['get', 'land_type_std'], 'National Forest'], 0, 1];
+        map.addLayer({ id: 'dir-fill', type: 'fill', source: 'dir', layout: { 'fill-sort-key': sortKey }, paint: { 'fill-color': DIR_COLOR, 'fill-opacity': 0.16 } }, before);
+        map.addLayer({ id: 'dir-line', type: 'line', source: 'dir', layout: { 'line-sort-key': sortKey }, paint: { 'line-color': DIR_COLOR, 'line-width': ['interpolate', ['linear'], ['zoom'], 6, 0.8, 12, 2] } }, before);
+        map.addLayer({ id: 'dir-sel', type: 'line', source: 'dir', filter: ['==', ['get', 'id'], ''], paint: { 'line-color': '#ffe9a8', 'line-width': 3.5 } }, before);
+        map.addLayer({ id: 'dir-label', type: 'symbol', source: 'dir', minzoom: 8.5, layout: { 'text-field': ['get', 'name'], 'text-size': 11, 'text-font': ['Noto Sans Regular'], 'text-max-width': 9 }, paint: { 'text-color': '#ffffff', 'text-halo-color': '#101510', 'text-halo-width': 1.4 } }, before);
+      }
+      (map.getSource('dir') as GeoJSONSource).setData(directory ? { type: 'FeatureCollection', features: directory.areas.map((a) => ({ type: 'Feature', geometry: a.geometry, properties: { id: a.properties.id, name: a.properties.name, land_type_std: a.properties.land_type_std } })) } : empty);
+      map.setFilter('dir-sel', ['==', ['get', 'id'], directory?.selectedId ?? '']);
+      for (const id of DIR_LAYERS) map.setLayoutProperty(id, 'visibility', directory ? 'visible' : 'none');
+    };
+    // isStyleLoaded() is false while tiles stream in, and 'load' fires only once, so test for the style's own layer
+    if (map.getLayer('bg')) apply(); else map.once('load', apply);
+  }, [directory, mapRef]);
 
   return <div ref={el} className="map" aria-label="Interactive hunting map" />;
 }

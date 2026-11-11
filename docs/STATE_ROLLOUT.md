@@ -107,3 +107,9 @@ Alabama's neighbors come first (GA, TN, MS, FL), then KY. Re-order if the owner 
 - Where should the state picker live in the UI (header, You screen, map)?
 - Should "coming soon" states appear in the picker, or only states with data?
 - Which areas, if any, should be promoted to full intelligence packs (Layer B) first?
+
+Answered by the owner on 2026-11-09 (Phase 0):
+
+- Picker: at the top of the "Where are you hunting?" sheet (the area pill), as a row of state chips. It appears only when more than one state has data.
+- States with no data are hidden from the picker (not listed as "coming soon"). A state shows up once its `dataFile` is set in `src/states/registry.ts`.
+- Layer B: none chosen yet; decide later.

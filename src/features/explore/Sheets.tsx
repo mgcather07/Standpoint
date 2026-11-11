@@ -4,6 +4,7 @@ import type { ZoneTypeFilter, BaseMap, LayerToggles } from '../../map/MapView';
 import type { Workspace } from '../../lib/workspaces';
 import type { Account } from '../../lib/account';
 import type { SyncInfo } from '../../lib/sync/store';
+import type { StateId, StateInfo } from '../../states/registry';
 import { addDays, localDate } from '../../engine/time';
 import { ModalSheet } from '../../ui/Sheet';
 import { Avatar, Button, Chip, Field, Notice, Segmented, Spinner, Switch } from '../../ui/kit';
@@ -127,7 +128,35 @@ export function CompassSheet({ open, onClose, windFrom, windMph }: { open: boole
 }
 
 // ---------------- workspace switcher ----------------
-export function WorkspaceSheet({ open, onClose, workspaces, activeId, onPick, account, landsLoading }: { open: boolean; onClose: () => void; workspaces: Workspace[]; activeId: string; onPick: (id: string) => void; account: Account; landsLoading: boolean }) {
+/** The state picker at the top of "Where are you hunting?". Shown only when more than one state has data. */
+function StatePicker({ states, activeId, onPick }: { states: StateInfo[]; activeId: StateId; onPick: (id: StateId) => void }) {
+  return (
+    <>
+      <div className="section-label" style={{ paddingTop: 4 }}>State</div>
+      <div className="state-row" role="radiogroup" aria-label="State">
+        {states.map((s) => <Chip key={s.id} role="radio" aria-checked={s.id === activeId} on={s.id === activeId} onClick={() => onPick(s.id)}>{s.name}</Chip>)}
+      </div>
+    </>
+  );
+}
+
+export function WorkspaceSheet({ open, onClose, workspaces, activeId, onPick, account, landsLoading, states = [], stateId = 'AL', onState }: {
+  open: boolean; onClose: () => void; workspaces: Workspace[]; activeId: string; onPick: (id: string) => void; account: Account; landsLoading: boolean;
+  /** States with data; the picker appears only when there is more than one. */
+  states?: StateInfo[]; stateId?: StateId; onState?: (id: StateId) => void;
+}) {
+  const current = states.find((s) => s.id === stateId);
+  const picker = states.length > 1 && onState ? <StatePicker states={states} activeId={stateId} onPick={(id) => { onState(id); if (states.find((s) => s.id === id)?.kind === 'directory') onClose(); }} /> : null;
+  if (picker && current?.kind === 'directory') {
+    return (
+      <ModalSheet open={open} onClose={onClose} title="Where are you hunting?">
+        <div style={{ paddingBottom: 8 }}>
+          {picker}
+          <div style={{ marginTop: 14 }}><Notice tone="info" title={`${current.name}: public land directory`}>Boundaries and agency information for public land. Zone scoring, wind and season rules cover Alabama only. Choose Alabama to see those areas and your clubs.</Notice></div>
+        </div>
+      </ModalSheet>
+    );
+  }
   const publicWs = workspaces.filter((w) => !w.private), privateWs = workspaces.filter((w) => w.private);
   const row = (w: Workspace) => (
     <button type="button" key={w.id} className="list-row" role="radio" aria-checked={w.id === activeId} onClick={() => { onPick(w.id); onClose(); }}>
@@ -139,7 +168,8 @@ export function WorkspaceSheet({ open, onClose, workspaces, activeId, onPick, ac
   return (
     <ModalSheet open={open} onClose={onClose} title="Where are you hunting?">
       <div style={{ paddingBottom: 8 }}>
-        <div className="section-label" style={{ paddingTop: 4 }}>Public land</div>
+        {picker}
+        <div className="section-label" style={{ paddingTop: picker ? 16 : 4 }}>{picker ? 'Alabama public land' : 'Public land'}</div>
         <div className="list" role="radiogroup" aria-label="Public land">{publicWs.map(row)}</div>
         <div className="section-label">Your clubs and private land</div>
         {privateWs.length > 0 ? <div className="list" role="radiogroup" aria-label="Private land">{privateWs.map(row)}</div>
