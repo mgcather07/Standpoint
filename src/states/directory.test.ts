@@ -58,7 +58,7 @@ describe('directory loader', () => {
   it('refuses Alabama and states with no data without fetching', async () => {
     const fetcher = okFetch({});
     await expect(loadStateDirectory('AL', { fetcher })).rejects.toThrow(/no directory data/);
-    await expect(loadStateDirectory('GA', { fetcher })).rejects.toThrow(/no directory data/);
+    await expect(loadStateDirectory('TN', { fetcher })).rejects.toThrow(/no directory data/);
     expect(fetcher).not.toHaveBeenCalled();
   });
 

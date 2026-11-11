@@ -35,6 +35,14 @@ describe('name matching', () => {
     expect(normalizeName("Rich Mtn. WMA (GA)")).toBe('rich mountain wildlife management area');
     expect(normalizeName('St. Marks NWR')).toBe('saint marks national wildlife refuge');
     expect(coreName('Rich Mountain WMA (GA)')).toBe('rich mountain');
+    expect(normalizeName('B. F. GRANT WMA')).toBe(normalizeName('B.F. Grant WMA'));
+    expect(normalizeName('J. L. Lester WMA')).toBe('jl lester wildlife management area');
+    expect(normalizeName('A Big Tract')).toBe('a big tract');
+  });
+  it('a shorter boundary name inside the row name is only reported, never drawn', () => {
+    const m = matchRow(row({ name: 'Hannahatchee Creek WMA' }), [cand('HANNAHATCHEE WMA')]);
+    expect(m.confidence).toBe('low');
+    expect(m.note).toContain('HANNAHATCHEE WMA');
   });
   it('high for the same name, medium for the same core name, never guesses', () => {
     expect(matchRow(row({ name: 'Rich Mountain WMA (GA)' }), [cand('Rich Mountain Wildlife Management Area')]).confidence).toBe('high');

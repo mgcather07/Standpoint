@@ -65,6 +65,8 @@ const GENERIC = /\b(national|state|forest|forests|wildlife|management|area|areas
 export function normalizeName(name) {
   let s = String(name ?? '').toLowerCase();
   s = s.replace(/\([a-z]{2}\)/g, ' ').replace(/&/g, ' and ').replace(/[’'`.]/g, '').replace(/[^a-z0-9]+/g, ' ');
+  // initials written with spaces ("B. F. Grant") read the same as without ("B.F. Grant")
+  s = s.replace(/\b[a-z](?: [a-z]\b)+/g, (m) => m.replace(/ /g, ''));
   for (const [re, to] of ABBREVIATIONS) s = s.replace(re, to);
   return s.replace(/\s+/g, ' ').trim();
 }
@@ -85,7 +87,13 @@ export function matchRow(row, candidates) {
   if (sameCore.length === 1) return { confidence: 'medium', candidate: sameCore[0] };
   if (sameCore.length > 1) return { confidence: 'low', candidate: null, note: `${sameCore.length} boundaries share the core name "${core}"` };
   const words = core.split(' ');
-  const partial = candidates.filter((c) => { const cc = coreName(c.name); return cc && (cc.includes(core) || words.every((w) => cc.split(' ').includes(w))); });
+  // either name's words contained in the other's ("Hannahatchee Creek WMA" / "Hannahatchee WMA"): listed for review only
+  const partial = candidates.filter((c) => {
+    const cc = coreName(c.name);
+    if (!cc) return false;
+    const cw = cc.split(' ');
+    return cc.includes(core) || words.every((w) => cw.includes(w)) || cw.every((w) => words.includes(w));
+  });
   if (partial.length) return { confidence: 'low', candidate: null, note: `partial name overlap: ${partial.slice(0, 3).map((c) => c.name).join('; ')}` };
   return { confidence: 'none', candidate: null };
 }

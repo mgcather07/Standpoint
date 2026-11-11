@@ -63,7 +63,7 @@ Flags:
 
 1. `git checkout -b state/<st>` from an up-to-date `main`.
 2. Read that state's rows from the CSV and the "known gaps" line in the tracker.
-3. Resolve a boundary polygon for each row. Candidate sources, in order: USFS EDW for national forests (`fetch-sources.mjs` already queries USFS ArcGIS for Alabama), USGS PAD-US for WMAs, state forests and refuges, then the state wildlife agency's GIS. Confirm each source is reachable and permits reuse before relying on it, and record it in each feature's `geometry_source`.
+3. Resolve a boundary polygon for each row. Download the state's sources with `node scripts/fetch-state-boundaries.mjs --state <ST>` (add the state's sources to that script first). Candidate sources, in order: USFS EDW for national forests (`fetch-sources.mjs` already queries USFS ArcGIS for Alabama), USGS PAD-US for WMAs, state forests and refuges, then the state wildlife agency's GIS. Confirm each source is reachable and permits reuse before relying on it, and record it in each feature's `geometry_source`.
 4. Match by normalized name within the state. Record `match_confidence` (`high`, `medium`, `low`). Show only `high`/`medium`. Never guess a polygon. List every unmatched or low row in `research/states/reports/<ST>.md` for the owner to review.
 5. Write `public/data/states/<st>.geojson`. Feature properties: `id, state, name, land_type_std, agency, acres, acres_verified, county_or_region, notes, source_url, flags, geometry_source, match_confidence`.
 6. Fill gaps where an official page exists (acreage, area-specific rules link). Record what was filled and from where in the state report.
@@ -77,7 +77,7 @@ Status: `todo`, `in progress`, `done`. Alabama is the reference implementation.
 | # | State | Rows | Usable | Missing acreage | NF rows | Status | Known gaps (from research) |
 |---|---|---:|---:|---:|---:|---|---|
 | 0 | AL | n/a | n/a | n/a | n/a | done (in app) | Reference. Keep unchanged. |
-| 1 | GA | 84 | 84 | 9 | 1 | todo | Some counties from memory; no acreage for Savannah, Eufaula, Fort Stewart, Fort Moore, Moody, Cumberland Island, Hartwell, Russell, B.F. Grant; per-WMA quota rules unverified; Wolf Island and Banks Lake NWRs and state park hunts missing. |
+| 1 | GA | 84 | 84 | 9 | 1 | done 2026-11-10: 70 drawn (66 high, 4 medium), 10 low, 4 unmatched, 0 excluded; see `research/states/reports/GA.md` | Some counties from memory; no acreage for Savannah, Eufaula, Fort Stewart, Fort Moore, Moody, Cumberland Island, Hartwell, Russell, B.F. Grant; per-WMA quota rules unverified; Wolf Island and Banks Lake NWRs and state park hunts missing. |
 | 2 | TN | 33 | 33 | 24 | 1 | todo | Thin: only about 10 rows have acreage. North Cumberland WMA shows 146,000 and about 205,000; LBL TN portion 60,000 vs 40,000; Chuck Swan, Ames Plantation, Hiwassee, Yuchi, Laurel Hill and other WMAs missing. Needs a second research pass. |
 | 3 | MS | 51 | 51 | 10 | 6 | todo | WMA acreage from Wikipedia; 14 WMAs overlap national forest rows; WMAs under 5,000 acres, Okatibbee, Tenn-Tom, Camp Shelby, state forests missing; Corps acreage blank. |
 | 4 | FL | 137 | 137 | 7 | 3 | todo | Many northern WMA quota rules unverified; state forest acreage blank; Lake Woodruff and Loxahatchee deer hunts unverified; some rows are small-game or waterfowl only. |

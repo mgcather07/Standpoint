@@ -34,7 +34,7 @@ const NY_TZ = 'America/New_York', CHI_TZ = 'America/Chicago';
 export const STATES: Record<StateId, StateInfo> = {
   AL: { id: 'AL', name: 'Alabama', bbox: [-88.47, 30.14, -84.89, 35.01], tz: CHI_TZ, dataFile: null, kind: 'intelligence', regions: Object.keys(REGIONS) as RegionId[] },
   // rollout order (docs/STATE_ROLLOUT.md tracker): neighbors first
-  GA: dir('GA', 'Georgia', [-85.61, 30.36, -80.84, 35.0], NY_TZ),
+  GA: { ...dir('GA', 'Georgia', [-85.61, 30.36, -80.84, 35.0], NY_TZ), dataFile: 'states/ga.geojson' }, // 2026-11-10: research/states/reports/GA.md
   TN: dir('TN', 'Tennessee', [-90.31, 34.98, -81.65, 36.68], CHI_TZ, true),
   MS: dir('MS', 'Mississippi', [-91.66, 30.17, -88.1, 35.0], CHI_TZ),
   FL: dir('FL', 'Florida', [-87.63, 24.4, -79.97, 31.0], NY_TZ, true),
