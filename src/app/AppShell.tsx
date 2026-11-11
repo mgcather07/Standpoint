@@ -33,7 +33,8 @@ type Modal = null | 'workspace' | 'account' | 'filters' | 'layers' | 'compass';
 const NAV: Array<{ tab: Tab; label: string; icon: typeof MapIcon }> = [{ tab: 'explore', label: 'Explore', icon: MapIcon }, { tab: 'outlook', label: '7-Day', icon: Calendar }, { tab: 'journal', label: 'Journal', icon: BookOpen }, { tab: 'you', label: 'You', icon: User }];
 
 export function AppShell() {
-  const ctl = useHuntController();
+  const [tab, setTab] = useHashTab();
+  const ctl = useHuntController({ outlook: tab === 'outlook' });
   const account = useAccount();
   const sync = useSyncInfo();
   const store = useStore();
@@ -44,7 +45,6 @@ export function AppShell() {
   const dark = useTheme(theme);
   const desktop = useMediaQuery('(min-width: 900px)');
   const install = useInstall();
-  const [tab, setTab] = useHashTab();
   const [snap, setSnap] = useState<Snap>('half');
   const [modal, setModal] = useState<Modal>(null);
   const [draft, setDraft] = useState<Partial<JournalEntry> | null>(null);

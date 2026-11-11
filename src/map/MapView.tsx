@@ -2,7 +2,7 @@
 // zoom in, and everything else is opt-in from the Layers sheet. Boundaries shown belong to the active workspace.
 import { useEffect, useRef } from 'react';
 import * as maplibregl from 'maplibre-gl';
-import type { GeoJSONSource, ImageSource, Map as MLMap, MapMouseEvent, StyleSpecification } from 'maplibre-gl';
+import type { FilterSpecification, GeoJSONSource, ImageSource, Map as MLMap, MapMouseEvent, StyleSpecification } from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import workerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url';
 import type { Feature, FeatureCollection, Polygon } from 'geojson';
@@ -39,6 +39,8 @@ type Quad = [[number, number], [number, number], [number, number], [number, numb
 const quad = (b: readonly number[]): Quad => [[b[0], b[3]], [b[2], b[3]], [b[2], b[1]], [b[0], b[1]]];
 const PIN_COLORS: Record<string, string> = { stand: '#f5c542', sighting: '#ff8a3d', rub: '#c46b2b', scrape: '#a0522d', trail: '#d9b38c', bedding: '#9b6bd6', feeding: '#6cc070', camera: '#5ab4e6', parking: '#ffffff', harvest: '#ff4d4d', blood: '#b3001b', saved_candidate: '#f7f2a1' };
 const empty: FeatureCollection = { type: 'FeatureCollection', features: [] };
+// parcels not owned by the Forest Service (features without an owner class count as not FS, as before)
+const NON_FS: FilterSpecification = ['!=', ['get', 'ownerclassification'], 'USDA FOREST SERVICE'];
 
 function styleFor(base: BaseMap, dark: boolean): StyleSpecification {
   return {
@@ -215,6 +217,7 @@ export function MapView({ data, workspaceKind, dark, base, layers, marks, select
     if (!map || !data) return;
     const add = () => {
       if (map.getSource('wma')) return;
+      const file = (name: string) => `${import.meta.env.BASE_URL}data/${data.region.dir}${name}`;
       const text = { 'text-font': ['Noto Sans Regular'] };
       const halo = { 'text-halo-color': '#101510', 'text-halo-width': 1.4 };
       // raster overlays first, so everything else draws above them
@@ -224,27 +227,35 @@ export function MapView({ data, workspaceKind, dark, base, layers, marks, select
       map.addLayer({ id: 'lidar-hs', type: 'raster', source: 'lidar', minzoom: 12, paint: { 'raster-opacity': 0.55 }, layout: { visibility: 'none' } });
       map.addSource('disturbance', { type: 'image', url: `${import.meta.env.BASE_URL}data/${data.region.dir}disturbance.png`, coordinates: quad(data.region.bbox) });
       map.addLayer({ id: 'disturbance', type: 'raster', source: 'disturbance', paint: { 'raster-opacity': 0.7, 'raster-resampling': 'nearest' }, layout: { visibility: 'none' } });
-      map.addSource('fuel', { type: 'geojson', data: data.fuelTreatments });
+      // File-backed layers go to MapLibre as URLs: its worker fetches (from the browser cache, the app has just
+      // loaded them) and parses them, instead of the main thread copying megabytes of objects into the worker.
+      map.addSource('fuel', { type: 'geojson', data: file('fuel-treatments.geojson') });
       map.addLayer({ id: 'fuel-line', type: 'line', source: 'fuel', paint: { 'line-color': '#ff8a3d', 'line-width': 1.5, 'line-dasharray': [2, 2] }, layout: { visibility: 'none' } });
-      map.addSource('contours', { type: 'geojson', data: data.contours });
-      map.addLayer({ id: 'contours', type: 'line', source: 'contours', paint: { 'line-color': '#b08a52', 'line-width': ['case', ['get', 'index'], 1.1, 0.5], 'line-opacity': 0.7 }, minzoom: 11, layout: { visibility: 'none' } });
-      map.addLayer({ id: 'contour-labels', type: 'symbol', source: 'contours', minzoom: 13.5, filter: ['get', 'index'], layout: { 'symbol-placement': 'line', 'text-field': ['concat', ['to-string', ['get', 'elevFt']], ' ft'], 'text-size': 10, ...text, visibility: 'none' }, paint: { 'text-color': '#e8d3a8', ...halo } });
-      map.addSource('streams', { type: 'geojson', data: data.streams });
-      map.addLayer({ id: 'streams', type: 'line', source: 'streams', paint: { 'line-color': '#4aa3e0', 'line-width': ['interpolate', ['linear'], ['get', 'km2'], 0.3, 0.6, 10, 2.2], 'line-opacity': 0.8 }, layout: { visibility: 'none' } });
-      map.addSource('ownership', { type: 'geojson', data: { ...data.ownership, features: data.ownership.features.filter((f) => (f.properties as { ownerclassification?: string }).ownerclassification !== 'USDA FOREST SERVICE') } });
-      map.addLayer({ id: 'nonfs', type: 'fill', source: 'ownership', paint: { 'fill-color': '#d64545', 'fill-opacity': 0.2 }, layout: { visibility: 'none' } });
-      map.addSource('wilderness', { type: 'geojson', data: data.wilderness });
+      // contours and streams: the region's, then (on your land) the club box's, drawn the same way
+      for (const [suffix, files] of [['', data.mapFiles], ['-club', data.mapFiles.club]] as const) {
+        map.addSource(`contours${suffix}`, { type: 'geojson', data: files?.contours ?? empty });
+        map.addLayer({ id: `contours${suffix}`, type: 'line', source: `contours${suffix}`, paint: { 'line-color': '#b08a52', 'line-width': ['case', ['get', 'index'], 1.1, 0.5], 'line-opacity': 0.7 }, minzoom: 11, layout: { visibility: 'none' } });
+        map.addLayer({ id: `contour-labels${suffix}`, type: 'symbol', source: `contours${suffix}`, minzoom: 13.5, filter: ['get', 'index'], layout: { 'symbol-placement': 'line', 'text-field': ['concat', ['to-string', ['get', 'elevFt']], ' ft'], 'text-size': 10, ...text, visibility: 'none' }, paint: { 'text-color': '#e8d3a8', ...halo } });
+      }
+      for (const [suffix, files] of [['', data.mapFiles], ['-club', data.mapFiles.club]] as const) {
+        map.addSource(`streams${suffix}`, { type: 'geojson', data: files?.streams ?? empty });
+        map.addLayer({ id: `streams${suffix}`, type: 'line', source: `streams${suffix}`, paint: { 'line-color': '#4aa3e0', 'line-width': ['interpolate', ['linear'], ['get', 'km2'], 0.3, 0.6, 10, 2.2], 'line-opacity': 0.8 }, layout: { visibility: 'none' } });
+      }
+      // non-Forest-Service parcels (the filter runs in MapLibre's worker)
+      map.addSource('ownership', { type: 'geojson', data: file('ownership.geojson') });
+      map.addLayer({ id: 'nonfs', type: 'fill', source: 'ownership', filter: NON_FS, paint: { 'fill-color': '#d64545', 'fill-opacity': 0.2 }, layout: { visibility: 'none' } });
+      map.addSource('wilderness', { type: 'geojson', data: file('wilderness.geojson') });
       map.addLayer({ id: 'wilderness', type: 'fill', source: 'wilderness', paint: { 'fill-color': '#7fbf6a', 'fill-opacity': 0.12 }, layout: { visibility: 'none' } });
       map.addLayer({ id: 'wilderness-line', type: 'line', source: 'wilderness', paint: { 'line-color': '#9fd98a', 'line-width': 1.5, 'line-dasharray': [3, 2] }, layout: { visibility: 'none' } });
       // boundaries (each belongs to one workspace)
-      map.addSource('nf', { type: 'geojson', data: data.nfAdmin });
+      map.addSource('nf', { type: 'geojson', data: file('nf-admin.geojson') });
       map.addLayer({ id: 'nf-line', type: 'line', source: 'nf', paint: { 'line-color': '#5fbf6a', 'line-width': 2.2, 'line-dasharray': [2, 1.5] }, layout: { visibility: 'none' } });
       map.addSource('zoned', { type: 'geojson', data: data.zoneDLines });
       map.addLayer({ id: 'zoned-line', type: 'line', source: 'zoned', paint: { 'line-color': '#a974e6', 'line-width': 2, 'line-dasharray': [4, 3], 'line-opacity': 0.85 }, layout: { visibility: 'none' } });
       map.addLayer({ id: 'zoned-label', type: 'symbol', source: 'zoned', minzoom: 10.5, layout: { 'symbol-placement': 'line', 'text-field': 'Deer Zone D | C', 'text-size': 11, ...text, 'symbol-spacing': 400, visibility: 'none' }, paint: { 'text-color': '#e2c6ff', ...halo } });
-      map.addSource('wma', { type: 'geojson', data: data.wma });
+      map.addSource('wma', { type: 'geojson', data: file('wma.geojson') });
       map.addLayer({ id: 'wma-line', type: 'line', source: 'wma', paint: { 'line-color': '#e9a824', 'line-width': ['interpolate', ['linear'], ['zoom'], 9, 1.2, 13, 2.4], 'line-opacity': ['interpolate', ['linear'], ['zoom'], 9, 0.75, 13, 1] }, layout: { visibility: 'none' } });
-      map.addSource('highways', { type: 'geojson', data: data.highways });
+      map.addSource('highways', { type: 'geojson', data: file('highways.geojson') });
       map.addLayer({ id: 'zone-divider', type: 'line', source: 'highways', filter: ['==', ['get', 'ref'], 'AL 33'], paint: { 'line-color': '#ffd84d', 'line-width': 2, 'line-dasharray': [4, 2] }, layout: { visibility: 'none' } });
       // Talladega WMAs: Zone A/B outlines traced from the permit map (the outer edge sits under the WMA line)
       map.addSource('wmazones', { type: 'geojson', data: data.wmaZones });
@@ -254,11 +265,11 @@ export function MapView({ data, workspaceKind, dark, base, layers, marks, select
       map.addLayer({ id: 'club-fill', type: 'fill', source: 'club', paint: { 'fill-color': '#ffd84d', 'fill-opacity': 0.06 }, layout: { visibility: 'none' } });
       map.addLayer({ id: 'club-line', type: 'line', source: 'club', paint: { 'line-color': '#ffd84d', 'line-width': 2.6 }, layout: { visibility: 'none' } });
       // roads and trails
-      map.addSource('fsroads', { type: 'geojson', data: data.fsRoads });
+      map.addSource('fsroads', { type: 'geojson', data: file('fs-roads.geojson') });
       map.addLayer({ id: 'fsroads', type: 'line', source: 'fsroads', paint: { 'line-color': ['match', ['slice', ['get', 'oper_maint_level'], 0, 1], '1', '#888', '2', '#d9a066', '#f0e6d2'], 'line-width': 1.5 }, layout: { visibility: 'none' } });
       map.addSource('clubroads', { type: 'geojson', data: empty });
       map.addLayer({ id: 'clubroads', type: 'line', source: 'clubroads', paint: { 'line-color': ['match', ['get', 'highway'], 'path', '#e36b5b', 'footway', '#e36b5b', 'bridleway', '#e36b5b', 'cycleway', '#e36b5b', '#f0e6d2'], 'line-width': 1.4 }, layout: { visibility: 'none' } });
-      map.addSource('trails', { type: 'geojson', data: data.trails });
+      map.addSource('trails', { type: 'geojson', data: file('trails.geojson') });
       map.addLayer({ id: 'trails', type: 'line', source: 'trails', paint: { 'line-color': '#e36b5b', 'line-width': 1.4, 'line-dasharray': [2, 1.5] }, layout: { visibility: 'none' } });
       // zones: outlines only up close, ranked dots at every scale
       map.addSource('cands', { type: 'geojson', data: empty, promoteId: 'id' });
@@ -314,16 +325,19 @@ export function MapView({ data, workspaceKind, dark, base, layers, marks, select
       (map.getSource('slope') as ImageSource | undefined)?.updateImage({ url: `${b}data/${data.region.dir}slope.png`, coordinates: q });
       (map.getSource('disturbance') as ImageSource | undefined)?.updateImage({ url: `${b}data/${data.region.dir}disturbance.png`, coordinates: q });
       const set = (id: string, fc: unknown) => (map.getSource(id) as GeoJSONSource | undefined)?.setData(fc as FeatureCollection);
-      set('fuel', data.fuelTreatments);
-      set('ownership', { ...data.ownership, features: data.ownership.features.filter((f) => (f.properties as { ownerclassification?: string }).ownerclassification !== 'USDA FOREST SERVICE') });
-      set('wilderness', data.wilderness);
-      set('nf', data.nfAdmin);
+      const file = (name: string) => `${b}data/${data.region.dir}${name}`;
+      set('fuel', file('fuel-treatments.geojson'));
+      set('contours', data.mapFiles.contours);
+      set('streams', data.mapFiles.streams);
+      set('ownership', file('ownership.geojson'));
+      set('wilderness', file('wilderness.geojson'));
+      set('nf', file('nf-admin.geojson'));
       set('zoned', data.zoneDLines);
-      set('wma', data.wma);
-      set('highways', data.highways);
+      set('wma', file('wma.geojson'));
+      set('highways', file('highways.geojson'));
       set('wmazones', data.wmaZones);
-      set('fsroads', data.fsRoads);
-      set('trails', data.trails);
+      set('fsroads', file('fs-roads.geojson'));
+      set('trails', file('trails.geojson'));
       set('access', { type: 'FeatureCollection', features: [...data.accessPoints.features] });
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -344,8 +358,8 @@ export function MapView({ data, workspaceKind, dark, base, layers, marks, select
       vis(['fsroads'], layers.roads && workspaceKind !== 'land');
       vis(['clubroads'], layers.roads && workspaceKind === 'land');
       vis(['trails'], layers.trails);
-      vis(['streams'], layers.streams);
-      vis(['contours', 'contour-labels'], layers.contours);
+      vis(['streams', 'streams-club'], layers.streams);
+      vis(['contours', 'contour-labels', 'contours-club', 'contour-labels-club'], layers.contours);
       vis(['slope', 'slope-club'], layers.slope);
       vis(['disturbance', 'disturbance-club', 'fuel-line'], layers.disturbance);
       vis(['lidar-hs'], layers.lidar && baseRef.current !== 'lidar');
@@ -377,16 +391,17 @@ export function MapView({ data, workspaceKind, dark, base, layers, marks, select
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [clubBoundary, clubRoads, data, layers.slope, layers.disturbance, mapRef]);
 
-  // contours and streams change when the private land's are merged in
+  // your land's contours and streams arrive (or go) with its terrain data
+  const clubContours = data?.mapFiles.club?.contours ?? null, clubStreams = data?.mapFiles.club?.streams ?? null;
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !data) return;
     whenReady(() => {
-      (map.getSource('contours') as GeoJSONSource | undefined)?.setData(data.contours);
-      (map.getSource('streams') as GeoJSONSource | undefined)?.setData(data.streams);
+      (map.getSource('contours-club') as GeoJSONSource | undefined)?.setData(clubContours ?? empty);
+      (map.getSource('streams-club') as GeoJSONSource | undefined)?.setData(clubStreams ?? empty);
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [data?.contours, data?.streams, mapRef]);
+  }, [clubContours, clubStreams, mapRef]);
 
   // ---- zones ----
   useEffect(() => {

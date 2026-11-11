@@ -66,6 +66,21 @@ export default defineConfig({
       },
     }),
   ],
+  build: {
+    rolldownOptions: {
+      output: {
+        // Vendor code in its own long-lived chunks: an app update re-downloads only the app's code, and the browser
+        // fetches and compiles the pieces in parallel.
+        codeSplitting: {
+          groups: [
+            { name: 'maplibre', test: /node_modules[\\/]maplibre-gl[\\/]/ },
+            { name: 'firebase', test: /node_modules[\\/](@firebase|firebase)[\\/]/ },
+            { name: 'react', test: /node_modules[\\/](react|react-dom|scheduler)[\\/]/ },
+          ],
+        },
+      },
+    },
+  },
   worker: { format: 'es' },
   optimizeDeps: { exclude: ['maplibre-gl'] },
   test: { environment: 'node', include: ['src/**/*.test.ts'] },

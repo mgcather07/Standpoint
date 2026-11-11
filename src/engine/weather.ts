@@ -106,9 +106,29 @@ export async function getAlerts(lat: number, lon: number): Promise<{ alerts: Wea
   }
 }
 
+const sortedHourly = new WeakMap<HourlyWeather[], boolean>();
+const isSorted = (a: HourlyWeather[]) => {
+  let v = sortedHourly.get(a);
+  if (v === undefined) { v = a.every((h, i) => i === 0 || a[i - 1].time <= h.time); sortedHourly.set(a, v); }
+  return v;
+};
+/** First index whose time is >= t (hourly sorted by time). */
+function lowerBound(a: HourlyWeather[], t: number) {
+  let lo = 0, hi = a.length;
+  while (lo < hi) { const mid = (lo + hi) >> 1; if (a[mid].time < t) lo = mid + 1; else hi = mid; }
+  return lo;
+}
+
+/** Forecast hours from 30 min before `start` to `end`. Scoring calls this for every zone, so it binary-searches. */
 export function hoursBetween(b: WeatherBundle | null, start: number, end: number): HourlyWeather[] {
   if (!b) return [];
-  return b.hourly.filter((h) => h.time >= start - 30 * 60000 && h.time <= end);
+  const from = start - 30 * 60000;
+  const a = b.hourly;
+  if (!isSorted(a)) return a.filter((h) => h.time >= from && h.time <= end);
+  const i = lowerBound(a, from);
+  let j = i;
+  while (j < a.length && a[j].time <= end) j++;
+  return a.slice(i, j);
 }
 
 export function dataAge(b: WeatherBundle | null): { minutes: number | null; stale: boolean } {

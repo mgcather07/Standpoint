@@ -12,13 +12,14 @@ import { analyzeSpot, buildWalkNetwork, loadGrid, type WalkNetwork } from '../en
 import { buildClubNetwork, clubBounds, clubShapeOptions, generateClubZones, hasTerrainData } from '../engine/club';
 import { buildHuntPlan, setupPoint } from '../engine/plan';
 import { buildRoadIndex, setPathIndex, setRoadIndex } from '../engine/roads';
-import { lidarZone, lidarZones, terrainRoutes, type ZoneRefinement } from '../engine/lidar';
+import { terrainRoutes, type ZoneRefinement } from '../engine/lidar';
+import { lidarZoneAsync, lidarZonesAsync } from '../engine/lidarClient';
 import { ringHectares } from '../engine/shape';
 import { clubLidarKey, readLidarCache, writeLidarCache } from '../lib/lidar-cache';
 import type { Candidate, HuntPreferences, HuntRecommendation, Session } from '../engine/types';
 import { addDays, fmtDate, localDate, sessionWindows, sunDay } from '../engine/time';
 import { hoursBetween } from '../engine/weather';
-import { evaluateCandidate, rankCandidates, sessionsFor } from '../engine/scoring';
+import { evaluateCandidate, newScoreMemo, rankCandidates, sessionsFor } from '../engine/scoring';
 import { haversine, lookupClubJurisdiction, lookupJurisdiction } from '../engine/geography';
 import { peakTimeline } from '../engine/peak';
 import { evaluateLegal } from '../engine/regulations';
@@ -37,7 +38,7 @@ export const DEFAULT_PREFS: HuntPreferences = { date: localDate(), session: 'com
 export interface Notice { id: string; tone: 'info' | 'warn' | 'good'; title: string; body?: string; actions: Array<{ label: string; run: () => void; primary?: boolean }> }
 export type Insets = { top: number; bottom: number; left: number; right: number };
 
-export function useHuntController() {
+export function useHuntController({ outlook: outlookOn = true }: { outlook?: boolean } = {}) {
   const lands = useLands();
   const { clubs, loaded: clubsLoaded } = useClubs();
   const { pins, add: addPin, remove: removePin } = usePins();
@@ -100,11 +101,10 @@ export function useHuntController() {
 
   const data = useMemo<AppData | null>(() => {
     if (!baseData) return null;
-    const contours = clubData ? { ...baseData.contours, features: [...baseData.contours.features, ...clubData.contours.features] } : baseData.contours;
-    const streams = clubData ? { ...baseData.streams, features: [...baseData.streams.features, ...clubData.streams.features] } : baseData.streams;
+    const mapFiles = clubData ? { ...baseData.mapFiles, club: clubData.mapFiles } : baseData.mapFiles;
     const candidates = (land ? landZones : filterCandidates(workspace, baseData.candidates)).map(refine);
     const feats = candidates.map((c, i) => ({ type: 'Feature' as const, id: i + 1, geometry: c.geometry, properties: c.properties }));
-    return { ...baseData, contours, streams, candidates, candidatesFc: { type: 'FeatureCollection', features: feats }, accessPoints: land ? { type: 'FeatureCollection', features: [] } : baseData.accessPoints };
+    return { ...baseData, mapFiles, candidates, candidatesFc: { type: 'FeatureCollection', features: feats }, accessPoints: land ? { type: 'FeatureCollection', features: [] } : baseData.accessPoints };
   }, [baseData, clubData, land, landZones, workspace, refine]);
 
   // ---- weather / sun ----
@@ -133,7 +133,12 @@ export function useHuntController() {
   useEffect(() => { const on = () => setOnline(true), off = () => setOnline(false); window.addEventListener('online', on); window.addEventListener('offline', off); return () => { window.removeEventListener('online', on); window.removeEventListener('offline', off); }; }, []);
 
   // ---- ranking ----
-  const ranked = useMemo(() => (data ? rankCandidates(data.candidates, { prefs: { ...prefs, session: 'compare' }, weather, pins, normals }, 5) : null), [data, prefs, weather, pins, normals]);
+  // One cache of zone scores per set of scoring inputs (date and session are part of each entry's key), so the map,
+  // the rankings, the selected zone and the outlook never score the same zone twice.
+  const prefsKey = JSON.stringify({ ...prefs, date: null, session: null });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const scoreMemo = useMemo(() => newScoreMemo(), [data, prefsKey, weather, pins, normals]);
+  const ranked = useMemo(() => (data ? rankCandidates(data.candidates, { prefs: { ...prefs, session: 'compare' }, weather, pins, normals, memo: scoreMemo }, 5) : null), [data, prefs, weather, pins, normals, scoreMemo]);
   const wanted = sessionsFor(prefs.session);
   const recs = useMemo(() => {
     if (!ranked) return [] as HuntRecommendation[];
@@ -149,7 +154,7 @@ export function useHuntController() {
     for (const c of data.candidates) {
       let best: number | null = null;
       for (const s of wanted) {
-        const r = evaluateCandidate(c, s, { prefs, weather, pins, normals });
+        const r = evaluateCandidate(c, s, { prefs, weather, pins, normals, memo: scoreMemo });
         if (r.legalStatus === 'verified_prohibited') continue;
         if (r.score != null && (best == null || r.score > best)) best = r.score;
       }
@@ -157,7 +162,7 @@ export function useHuntController() {
     }
     return m;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [data, prefs, weather, pins, normals]);
+  }, [data, prefs, weather, pins, normals, scoreMemo]);
 
   /** How each zone is drawn: dots sized by rank, the top five numbered. */
   const marks = useMemo(() => {
@@ -177,14 +182,14 @@ export function useHuntController() {
   const selected = useMemo<HuntRecommendation | null>(() => {
     if (!selectedKey || !data) return null;
     const c = findCand(selectedKey.id);
-    return c ? evaluateCandidate(c, selectedKey.session, { prefs: { ...prefs, date: selectedKey.date }, weather, pins, normals }) : null;
-  }, [selectedKey, data, prefs, weather, pins, normals, findCand]);
+    return c ? evaluateCandidate(c, selectedKey.session, { prefs: { ...prefs, date: selectedKey.date }, weather, pins, normals, memo: scoreMemo }) : null;
+  }, [selectedKey, data, prefs, weather, pins, normals, findCand, scoreMemo]);
   const selectedCompare = useMemo(() => {
     if (!selectedKey || !data) return {};
     const c = findCand(selectedKey.id);
     if (!c) return {};
-    return Object.fromEntries((['morning', 'midday', 'evening'] as Session[]).map((s) => [s, evaluateCandidate(c, s, { prefs: { ...prefs, date: selectedKey.date }, weather, pins, normals })])) as Partial<Record<Session, HuntRecommendation>>;
-  }, [selectedKey, data, prefs, weather, pins, normals, findCand]);
+    return Object.fromEntries((['morning', 'midday', 'evening'] as Session[]).map((s) => [s, evaluateCandidate(c, s, { prefs: { ...prefs, date: selectedKey.date }, weather, pins, normals, memo: scoreMemo })])) as Partial<Record<Session, HuntRecommendation>>;
+  }, [selectedKey, data, prefs, weather, pins, normals, findCand, scoreMemo]);
   const timeline = useMemo(() => {
     if (!selectedKey || !data) return null;
     const c = findCand(selectedKey.id);
@@ -196,7 +201,7 @@ export function useHuntController() {
     if (!c) return null;
     const today = localDate();
     const upcoming = Array.from({ length: 7 }, (_, i) => addDays(today, i)).flatMap((date) => (['morning', 'evening'] as Session[]).map((session) => {
-      const r = evaluateCandidate(c, session, { prefs: { ...prefs, date }, weather, pins, normals });
+      const r = evaluateCandidate(c, session, { prefs: { ...prefs, date }, weather, pins, normals, memo: scoreMemo });
       return { date, session, score: r.legalStatus === 'verified_prohibited' ? null : r.score, windFrom: r.windAssessment.windFromDegrees, label: `${fmtDate(date, { weekday: 'short', month: 'numeric', day: 'numeric' })} ${session === 'morning' ? 'morning' : 'evening'}` };
     }));
     return buildHuntPlan(selected, timeline, upcoming);
@@ -223,20 +228,25 @@ export function useHuntController() {
   // ---- legal / notices ----
   const legalOnMap = useMemo(() => [...mapScores.values()].filter((v) => v != null).length, [mapScores]);
   const probe = useCallback((date: string) => legalProbes(workspace, date, prefs), [workspace, prefs]);
-  const outlook = useMemo<OutlookDay[]>(() => {
-    if (!data) return [];
+  // The 7-day outlook scores every zone for 7 days × 2 sessions, so it is computed only while its tab is open, and
+  // picking a zone only re-scores that zone for the comparison columns.
+  const outlookRanks = useMemo(() => {
+    if (!data || !outlookOn) return [];
     const today = localDate();
     return Array.from({ length: 7 }, (_, i) => {
       const date = addDays(today, i);
-      const ctx = { prefs: { ...prefs, date }, weather, pins, normals };
+      const ctx = { prefs: { ...prefs, date }, weather, pins, normals, memo: scoreMemo };
       const m = rankCandidates(data.candidates, { ...ctx, prefs: { ...ctx.prefs, session: 'morning' } }, 1);
       const e = rankCandidates(data.candidates, { ...ctx, prefs: { ...ctx.prefs, session: 'evening' } }, 1);
-      const sel = selectedKey ? findCand(selectedKey.id) : null;
       const dw = weather?.daily.find((d) => d.date === date);
-      return { date, sun: sunDay(date, wxPoint[0], wxPoint[1]), morning: m.recommendations[0] ?? null, evening: e.recommendations[0] ?? null, compareMorning: sel ? evaluateCandidate(sel, 'morning', ctx) : null, compareEvening: sel ? evaluateCandidate(sel, 'evening', ctx) : null, tMax: dw?.tMaxF ?? null, tMin: dw?.tMinF ?? null, precip: dw?.precipIn ?? null, windDom: dw?.windDominant ?? null, windMax: dw?.windMaxMph ?? null, legal: probe(date)[0] };
+      return { date, ctx, sun: sunDay(date, wxPoint[0], wxPoint[1]), morning: m.recommendations[0] ?? null, evening: e.recommendations[0] ?? null, tMax: dw?.tMaxF ?? null, tMin: dw?.tMinF ?? null, precip: dw?.precipIn ?? null, windDom: dw?.windDominant ?? null, windMax: dw?.windMaxMph ?? null, legal: probe(date)[0] };
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [data, prefs, weather, pins, selectedKey, normals, probe]);
+  }, [data, prefs, weather, pins, normals, probe, scoreMemo, outlookOn]);
+  const outlook = useMemo<OutlookDay[]>(() => {
+    const sel = selectedKey ? findCand(selectedKey.id) : null;
+    return outlookRanks.map(({ ctx, ...day }) => ({ ...day, compareMorning: sel ? evaluateCandidate(sel, 'morning', ctx) : null, compareEvening: sel ? evaluateCandidate(sel, 'evening', ctx) : null }));
+  }, [outlookRanks, selectedKey, findCand]);
 
   const notices = useMemo<Notice[]>(() => {
     const out: Notice[] = [];
@@ -280,7 +290,7 @@ export function useHuntController() {
     const ctl = new AbortController();
     setClubLidarFailed(false);
     setLidar((m) => ({ ...m, ...Object.fromEntries(ids.map((id) => [id, 'loading' as const])) }));
-    lidarZones(landZones.map((z) => ({ id: z.properties.id, center: z.properties.center })), clubNet, { walkable: land.geometry, water: baseData.water, lines: [clubData.roads] }, { signal: ctl.signal, shape: clubShapeOptions(land.geometry) })
+    lidarZonesAsync(landZones.map((z) => ({ id: z.properties.id, center: z.properties.center })), clubNet, { walkable: land.geometry, water: baseData.water, lines: [clubData.roads] }, { signal: ctl.signal, shape: clubShapeOptions(land.geometry) })
       .then((res) => {
         setLidar((m) => ({ ...m, ...Object.fromEntries(ids.map((id) => [id, res[id]?.route || res[id]?.shape ? res[id] : 'none'])) }));
         writeLidarCache(clubLidarKey(land.id), res, clubTargetsKey);
@@ -314,7 +324,7 @@ export function useHuntController() {
     const shape = isSpot ? (land ? clubShapeOptions(land.geometry) : {}) : false; // public zones keep the build's outlines
     inflight.current = id;
     setLidar((m) => ({ ...m, [id]: 'loading' }));
-    lidarZone(c.properties.center, net, layerSet, { radiusM, shape })
+    lidarZoneAsync(c.properties.center, net, layerSet, { radiusM, shape })
       .then((r) => {
         inflight.current = null;
         setLidar((m) => ({ ...m, [id]: r ?? 'none' }));
@@ -368,7 +378,7 @@ export function useHuntController() {
   const onCandidate = useCallback((id: string) => {
     const c = data?.candidates.find((x) => x.properties.id === id);
     if (!c) return;
-    const best = wanted.map((s) => evaluateCandidate(c, s, { prefs, weather, pins, normals })).sort((a, b) => (b.score ?? -1) - (a.score ?? -1))[0];
+    const best = wanted.map((s) => evaluateCandidate(c, s, { prefs, weather, pins, normals, memo: scoreMemo })).sort((a, b) => (b.score ?? -1) - (a.score ?? -1))[0];
     openRec(best);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data, prefs, weather, pins, normals, openRec]);
@@ -384,7 +394,7 @@ export function useHuntController() {
     if (session === 'morning' || session === 'evening') setSelectedKey((k) => (k ? { ...k, session } : k));
     else if (selectedKey) {
       const c = findCand(selectedKey.id);
-      if (c) { const best = (['morning', 'midday', 'evening'] as Session[]).map((s) => evaluateCandidate(c, s, { prefs: { ...prefs, date: selectedKey.date }, weather, pins, normals })).sort((a, b) => (b.score ?? -1) - (a.score ?? -1))[0]; setSelectedKey({ ...selectedKey, session: best.session }); }
+      if (c) { const best = (['morning', 'midday', 'evening'] as Session[]).map((s) => evaluateCandidate(c, s, { prefs: { ...prefs, date: selectedKey.date }, weather, pins, normals, memo: scoreMemo })).sort((a, b) => (b.score ?? -1) - (a.score ?? -1))[0]; setSelectedKey({ ...selectedKey, session: best.session }); }
     }
     setWindHourIdx(0);
   };
@@ -409,7 +419,7 @@ export function useHuntController() {
       }
       setSpots((x) => [...x.slice(-9), res]);
       const date = opts.date && opts.date >= localDate() ? opts.date : prefs.date;
-      const ctx = { prefs: { ...prefs, date }, weather, pins, normals };
+      const ctx = { prefs: { ...prefs, date }, weather, pins, normals, memo: scoreMemo };
       const best = (opts.session ? [opts.session] : (['morning', 'midday', 'evening'] as Session[])).map((s) => evaluateCandidate(res, s, ctx)).sort((a, b) => (b.score ?? -1) - (a.score ?? -1))[0];
       setChecking(null);
       setInspect(null);

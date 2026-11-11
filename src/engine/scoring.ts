@@ -23,7 +23,19 @@ export interface ScoreContext {
   pins: UserPin[];
   normals?: Normals | null;
   now?: number;
+  /**
+   * Optional result cache shared by every evaluation made with the same prefs (apart from date and session),
+   * weather, pins and normals. The app scores each zone several times per render (map dots, rankings, the selected
+   * zone, the 7-day outlook); with a memo each (zone, session, date) is computed once. Create a new one with
+   * newScoreMemo() whenever any of those inputs change.
+   */
+  memo?: ScoreMemo;
 }
+
+export type ScoreMemo = WeakMap<Candidate, Map<string, HuntRecommendation>>;
+export const newScoreMemo = (): ScoreMemo => new WeakMap();
+// results that depend on the clock ("session already ended", forecast lead time) are recomputed every 5 minutes
+const MEMO_TIME_BUCKET_MS = 5 * 60000;
 
 function chooseRoute(c: Candidate, prefs: HuntPreferences): RouteOption | null {
   const routes = c.properties.routes ?? [];
@@ -201,6 +213,16 @@ function evidenceComponent(c: Candidate, pins: UserPin[]): ScoreComponent {
 }
 
 export function evaluateCandidate(c: Candidate, session: Session, ctx: ScoreContext): HuntRecommendation {
+  if (!ctx.memo) return evaluateUncached(c, session, ctx);
+  const key = `${session}|${ctx.prefs.date}|${ctx.now ?? ''}|${Math.floor(Date.now() / MEMO_TIME_BUCKET_MS)}`;
+  let m = ctx.memo.get(c);
+  if (!m) { m = new Map(); ctx.memo.set(c, m); }
+  let r = m.get(key);
+  if (!r) { r = evaluateUncached(c, session, ctx); m.set(key, r); }
+  return r;
+}
+
+function evaluateUncached(c: Candidate, session: Session, ctx: ScoreContext): HuntRecommendation {
   const { prefs } = ctx;
   const p = c.properties;
   const date = prefs.date;

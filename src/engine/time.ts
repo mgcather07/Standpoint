@@ -3,11 +3,32 @@ import * as SunCalc from 'suncalc';
 export const TZ = 'America/Chicago';
 export const BANKHEAD_CENTER: [number, number] = [-87.37, 34.23]; // centre of Bankhead National Forest
 
-const partsFmt = new Intl.DateTimeFormat('en-US', { timeZone: TZ, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23', weekday: 'short' });
+const partsFmt = new Intl.DateTimeFormat('en-US', { timeZone: TZ, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
+const HOUR_MS = 3600000;
+const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+// The engine converts times thousands of times per scoring pass, and Intl formatting is slow (milliseconds per call
+// on a phone). Chicago's offset only changes at DST transitions, which fall exactly on UTC hour boundaries
+// (2:00 CST = 08:00 UTC, 2:00 CDT = 07:00 UTC), so it is looked up once per UTC hour and cached.
+const offsetCache = new Map<number, number>();
+function offsetForHour(hourIndex: number): number {
+  let off = offsetCache.get(hourIndex);
+  if (off === undefined) {
+    const t = hourIndex * HOUR_MS;
+    const p = Object.fromEntries(partsFmt.formatToParts(new Date(t)).map((x) => [x.type, x.value]));
+    off = Math.round((Date.UTC(Number(p.year), Number(p.month) - 1, Number(p.day), Number(p.hour), Number(p.minute)) - t) / 60000);
+    if (offsetCache.size > 20000) offsetCache.clear();
+    offsetCache.set(hourIndex, off);
+  }
+  return off;
+}
+
+const pad = (n: number) => String(n).padStart(2, '0');
 
 export function chicagoParts(t: number | Date) {
-  const p = Object.fromEntries(partsFmt.formatToParts(new Date(t)).map((x) => [x.type, x.value]));
-  return { date: `${p.year}-${p.month}-${p.day}`, hour: Number(p.hour), minute: Number(p.minute), weekday: p.weekday as string };
+  const ms = typeof t === 'number' ? t : t.getTime();
+  const local = new Date(Math.floor(ms / 60000) * 60000 + offsetForHour(Math.floor(ms / HOUR_MS)) * 60000);
+  return { date: `${local.getUTCFullYear()}-${pad(local.getUTCMonth() + 1)}-${pad(local.getUTCDate())}`, hour: local.getUTCHours(), minute: local.getUTCMinutes(), weekday: WEEKDAYS[local.getUTCDay()] };
 }
 
 /** Local (America/Chicago) calendar date for an instant. */
@@ -15,10 +36,7 @@ export const localDate = (t: number | Date = Date.now()) => chicagoParts(t).date
 
 /** Offset (minutes) of America/Chicago from UTC at instant t. Handles DST. */
 export function tzOffsetMinutes(t: number): number {
-  const p = chicagoParts(t);
-  const [y, m, d] = p.date.split('-').map(Number);
-  const asUtc = Date.UTC(y, m - 1, d, p.hour, p.minute);
-  return Math.round((asUtc - Math.floor(t / 60000) * 60000) / 60000);
+  return offsetForHour(Math.floor(t / HOUR_MS));
 }
 
 /** Epoch ms for a local wall-clock time in America/Chicago. */
@@ -39,9 +57,13 @@ export function addDays(date: string, n: number): string {
 export const weekday = (date: string) => chicagoParts(chicagoTime(date, 12)).weekday;
 export const isWeekend = (date: string) => ['Sat', 'Sun'].includes(weekday(date));
 
+// Creating an Intl.DateTimeFormat is expensive; build each one once and reuse it.
+const timeFmt = new Intl.DateTimeFormat('en-US', { timeZone: TZ, hour: 'numeric', minute: '2-digit' });
+const dateFmts = new Map<string, Intl.DateTimeFormat>();
+
 export function fmtTime(t: number | null | undefined): string {
   if (t == null || Number.isNaN(t)) return '—';
-  return new Intl.DateTimeFormat('en-US', { timeZone: TZ, hour: 'numeric', minute: '2-digit' }).format(new Date(t));
+  return timeFmt.format(new Date(t));
 }
 
 /** Compact range for tight layouts: "6:33–11:03 AM" when both ends share AM/PM, else "6:33 AM–6:33 PM". */
@@ -53,7 +75,10 @@ export function fmtRange(a: number | null | undefined, b: number | null | undefi
 }
 
 export function fmtDate(date: string, opts: Intl.DateTimeFormatOptions = { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' }): string {
-  return new Intl.DateTimeFormat('en-US', { timeZone: TZ, ...opts }).format(new Date(chicagoTime(date, 12)));
+  const key = JSON.stringify(opts);
+  let f = dateFmts.get(key);
+  if (!f) { f = new Intl.DateTimeFormat('en-US', { timeZone: TZ, ...opts }); dateFmts.set(key, f); }
+  return f.format(new Date(chicagoTime(date, 12)));
 }
 
 export interface SunDay {
@@ -81,12 +106,21 @@ export function phaseName(p: number): string {
   return 'Waning crescent';
 }
 
+const sunCache = new Map<string, SunDay>();
+
+/**
+ * Sun and moon times for a date and place. Results are cached (scoring asks for the same zone and date many times)
+ * and frozen so a cached value can never be changed by a caller. The moon block is computed only when read: only the
+ * conditions card shows it, and computing moonrise/moonset for every zone was most of the scoring time.
+ */
 export function sunDay(date: string, lon: number, lat: number): SunDay {
+  const key = `${date}|${lon}|${lat}`;
+  const hit = sunCache.get(key);
+  if (hit) return hit;
   const noon = new Date(chicagoTime(date, 12));
   const s = SunCalc.getTimes(noon, lat, lon);
-  const mi = SunCalc.getMoonIllumination(noon);
-  const mt = SunCalc.getMoonTimes(new Date(chicagoTime(date, 0)), lat, lon);
-  return {
+  let moon: SunDay['moon'] | undefined;
+  const day = {
     date,
     sunrise: s.sunrise!.getTime(),
     sunset: s.sunset!.getTime(),
@@ -95,8 +129,22 @@ export function sunDay(date: string, lon: number, lat: number): SunDay {
     legalStart: s.sunrise!.getTime() - LEGAL_OFFSET_MIN * 60000,
     legalEnd: s.sunset!.getTime() + LEGAL_OFFSET_MIN * 60000,
     solarNoon: s.solarNoon!.getTime(),
-    moon: { phase: mi.phase, phaseName: phaseName(mi.phase), illumination: mi.fraction, rise: mt.rise ? mt.rise.getTime() : null, set: mt.set ? mt.set.getTime() : null },
-  };
+  } as SunDay;
+  Object.defineProperty(day, 'moon', {
+    enumerable: true,
+    get() {
+      if (!moon) {
+        const mi = SunCalc.getMoonIllumination(noon);
+        const mt = SunCalc.getMoonTimes(new Date(chicagoTime(date, 0)), lat, lon);
+        moon = Object.freeze({ phase: mi.phase, phaseName: phaseName(mi.phase), illumination: mi.fraction, rise: mt.rise ? mt.rise.getTime() : null, set: mt.set ? mt.set.getTime() : null });
+      }
+      return moon;
+    },
+  });
+  Object.freeze(day);
+  if (sunCache.size > 20000) sunCache.clear();
+  sunCache.set(key, day);
+  return day;
 }
 
 export interface SessionWindow {
